@@ -144,6 +144,33 @@ async function run() {
     });
 
 
+    app.get('/api/ideas/:id', async (req, res, next) => {
+      try {
+        const ideaId = new ObjectId(req.params.id);
+        await ideasCollection.updateOne({ _id: ideaId }, { $inc: { views: 1 } });
+
+        const ideas = await ideasCollection.aggregate([
+          { $match: { _id: ideaId } },
+          { $lookup: { from: 'user', localField: 'author', foreignField: '_id', as: 'authorInfo' } },
+          { $unwind: { path: '$authorInfo', preserveNullAndEmptyArrays: true } },
+          { $project: { 'authorInfo.password': 0 } }
+        ]).toArray();
+
+        if (ideas.length === 0) {
+          return res.status(404).json({ message: 'Idea not found' });
+        }
+
+        const idea = ideas[0];
+        idea.author = idea.authorInfo;
+        delete idea.authorInfo;
+        res.json(idea);
+      } catch (error) { next(error); }
+    });
+
+   
+
+    
+
 
 
 
@@ -158,7 +185,7 @@ async function run() {
         const userId = req.user.id;
         let user = await usersCollection.findOne({ _id: userId });
         if (!user) {
-          try { user = await usersCollection.findOne({ _id: new ObjectId(userId) }); } catch(e) {}
+          try { user = await usersCollection.findOne({ _id: new ObjectId(userId) }); } catch (e) { }
         }
         if (user) {
           delete user.password;
