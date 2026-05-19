@@ -74,6 +74,7 @@ async function run() {
 
     // collections
     const ideasCollection = db.collection('ideas');
+    const usersCollection = db.collection('user');
 
 
     const ideasToMigrate = await ideasCollection.find({ author: { $type: "string" } }).toArray();
@@ -139,6 +140,32 @@ async function run() {
           { $project: { 'authorInfo.password': 0, 'authorInfo.email': 0 } }
         ]).toArray();
         res.json(ideas.map(idea => ({ ...idea, author: idea.authorInfo })));
+      } catch (error) { next(error); }
+    });
+
+
+
+
+
+
+
+
+
+    // user profile apis
+
+    app.get('/api/users/profile', verifyToken, async (req, res, next) => {
+      try {
+        const userId = req.user.id;
+        let user = await usersCollection.findOne({ _id: userId });
+        if (!user) {
+          try { user = await usersCollection.findOne({ _id: new ObjectId(userId) }); } catch(e) {}
+        }
+        if (user) {
+          delete user.password;
+          res.json(user);
+        } else {
+          res.json(req.user);
+        }
       } catch (error) { next(error); }
     });
 
