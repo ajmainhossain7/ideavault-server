@@ -129,6 +129,19 @@ async function run() {
       } catch (error) { next(error); }
     });
 
+    app.get('/api/ideas/trending', async (req, res, next) => {
+      try {
+        const ideas = await ideasCollection.aggregate([
+          { $sort: { views: -1, likes: -1, createdAt: -1 } },
+          { $limit: 6 },
+          { $lookup: { from: 'user', localField: 'author', foreignField: '_id', as: 'authorInfo' } },
+          { $unwind: { path: '$authorInfo', preserveNullAndEmptyArrays: true } },
+          { $project: { 'authorInfo.password': 0, 'authorInfo.email': 0 } }
+        ]).toArray();
+        res.json(ideas.map(idea => ({ ...idea, author: idea.authorInfo })));
+      } catch (error) { next(error); }
+    });
+
 
 
   } catch (error) {
