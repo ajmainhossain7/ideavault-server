@@ -75,6 +75,7 @@ async function run() {
     // collections
     const ideasCollection = db.collection('ideas');
     const usersCollection = db.collection('user');
+    const commentsCollection = db.collection('comments');
 
 
     const ideasToMigrate = await ideasCollection.find({ author: { $type: "string" } }).toArray();
@@ -83,6 +84,16 @@ async function run() {
         await ideasCollection.updateOne({ _id: idea._id }, { $set: { author: new ObjectId(idea.author) } });
       }
     }
+
+
+    const commentsToMigrate = await commentsCollection.find({ author: { $type: "string" } }).toArray();
+    for (const comment of commentsToMigrate) {
+      if (comment.author && comment.author.length === 24) {
+        await commentsCollection.updateOne({ _id: comment._id }, { $set: { author: new ObjectId(comment.author) } });
+      }
+    }
+
+
 
 
     //  idea section
@@ -167,9 +178,163 @@ async function run() {
       } catch (error) { next(error); }
     });
 
-   
+    app.post('/api/ideas', verifyToken, async (req, res, next) => {
+      try {
+        const ideaData = {
+          ...req.body,
+          author: new ObjectId(req.user.id),
+          views: 0,
+          likes: 0,
+          createdAt: new Date(),
+          updatedAt: new Date()
+        };
+        const result = await ideasCollection.insertOne(ideaData);
+        ideaData._id = result.insertedId;
 
-    
+        const authorInfo = {
+          _id: req.user.id,
+          name: req.user.name,
+          image: req.user.image
+        };
+
+        res.status(201).json({ ...ideaData, author: authorInfo });
+      } catch (error) { next(error); }
+    });
+
+    app.put('/api/ideas/:id', verifyToken, async (req, res, next) => {
+      try {
+        const ideaId = new ObjectId(req.params.id);
+        const idea = await ideasCollection.findOne({ _id: ideaId });
+        if (!idea) {
+          return res.status(404).json({ message: 'Idea not found' });
+        }
+
+        if (idea.author !== req.user.id && idea.author.toString() !== req.user.id) {
+          return res.status(401).json({ message: 'User not authorized' });
+        }
+
+
+        const updateData = { ...req.body };
+        delete updateData._id;
+        delete updateData.author;
+        delete updateData.views;
+        delete updateData.likes;
+        delete updateData.createdAt;
+        updateData.updatedAt = new Date();
+
+        await ideasCollection.updateOne({ _id: ideaId }, { $set: updateData });
+        const updatedIdea = await ideasCollection.findOne({ _id: ideaId });
+        res.json(updatedIdea);
+      } catch (error) { next(error); }
+    });
+
+
+    app.delete('/api/ideas/:id', verifyToken, async (req, res, next) => {
+      try {
+        const ideaId = new ObjectId(req.params.id);
+        const idea = await ideasCollection.findOne({ _id: ideaId });
+        if (!idea) {
+          return res.status(404).json({ message: 'Idea not found' });
+        }
+
+        if (idea.author !== req.user.id && idea.author.toString() !== req.user.id) {
+          return res.status(401).json({ message: 'User not authorized' });
+        }
+
+        await ideasCollection.deleteOne({ _id: ideaId });
+        await commentsCollection.deleteMany({ idea: ideaId });
+        await bookmarksCollection.deleteMany({ idea: ideaId });
+        res.json({ id: req.params.id });
+      } catch (error) { next(error); }
+    });
+
+
+    // comment section
+
+    app.get('/api/comments/idea/:ideaId', async (req, res, next) => {
+      try {
+        const ideaId = new ObjectId(req.params.ideaId);
+        const comments = await commentsCollection.aggregate([
+          { $match: { idea: ideaId } },
+          { $sort: { createdAt: -1 } },
+          { $lookup: { from: 'user', localField: 'author', foreignField: '_id', as: 'authorInfo' } },
+          { $unwind: { path: '$authorInfo', preserveNullAndEmptyArrays: true } },
+          { $project: { 'authorInfo.password': 0, 'authorInfo.email': 0 } }
+        ]).toArray();
+        res.json(comments.map(c => ({ ...c, author: c.authorInfo })));
+      } catch (error) { next(error); }
+    });
+
+    app.post('/api/comments', verifyToken, async (req, res, next) => {
+      try {
+        const { ideaId, text } = req.body;
+        const ideaObjId = new ObjectId(ideaId);
+
+        const idea = await ideasCollection.findOne({ _id: ideaObjId });
+        if (!idea) {
+          return res.status(404).json({ message: 'Idea not found' });
+        }
+
+        const commentData = {
+          text,
+          idea: ideaObjId,
+          author: new ObjectId(req.user.id),
+          createdAt: new Date(),
+          updatedAt: new Date()
+        };
+
+        const result = await commentsCollection.insertOne(commentData);
+        commentData._id = result.insertedId;
+
+        const authorInfo = {
+          _id: req.user.id,
+          name: req.user.name,
+          image: req.user.image
+        };
+
+        res.status(201).json({ ...commentData, author: authorInfo });
+      } catch (error) { next(error); }
+    });
+
+    app.put('/api/comments/:id', verifyToken, async (req, res, next) => {
+      try {
+        const commentId = new ObjectId(req.params.id);
+        const comment = await commentsCollection.findOne({ _id: commentId });
+        if (!comment) {
+          return res.status(404).json({ message: 'Comment not found' });
+        }
+
+        if (comment.author !== req.user.id && comment.author.toString() !== req.user.id) {
+          return res.status(401).json({ message: 'User not authorized' });
+        }
+
+        await commentsCollection.updateOne({ _id: commentId }, { $set: { text: req.body.text, updatedAt: new Date() } });
+        const updatedComment = await commentsCollection.findOne({ _id: commentId });
+        res.json(updatedComment);
+      } catch (error) { next(error); }
+    });
+
+    app.delete('/api/comments/:id', verifyToken, async (req, res, next) => {
+      try {
+        const commentId = new ObjectId(req.params.id);
+        const comment = await commentsCollection.findOne({ _id: commentId });
+        if (!comment) {
+          return res.status(404).json({ message: 'Comment not found' });
+        }
+
+        if (comment.author !== req.user.id && comment.author.toString() !== req.user.id) {
+          return res.status(401).json({ message: 'User not authorized' });
+        }
+
+        await commentsCollection.deleteOne({ _id: commentId });
+        res.json({ id: req.params.id });
+      } catch (error) { next(error); }
+    });
+
+
+
+
+
 
 
 
@@ -195,6 +360,35 @@ async function run() {
         }
       } catch (error) { next(error); }
     });
+
+    
+
+    app.get('/api/users/ideas', verifyToken, async (req, res, next) => {
+      try {
+        const ideas = await ideasCollection.find({ author: new ObjectId(req.user.id) }).sort({ createdAt: -1 }).toArray();
+        res.json(ideas);
+      } catch (error) { next(error); }
+    });
+
+    app.get('/api/users/interactions', verifyToken, async (req, res, next) => {
+      try {
+        const comments = await commentsCollection.aggregate([
+          { $match: { author: new ObjectId(req.user.id) } },
+          { $sort: { createdAt: -1 } },
+          { $lookup: { from: 'ideas', localField: 'idea', foreignField: '_id', as: 'ideaInfo' } },
+          { $unwind: { path: '$ideaInfo', preserveNullAndEmptyArrays: true } },
+          { $project: { text: 1, createdAt: 1, 'ideaInfo._id': 1, 'ideaInfo.title': 1, 'ideaInfo.category': 1 } }
+        ]).toArray();
+        res.json(comments.map(c => ({ ...c, idea: c.ideaInfo })));
+      } catch (error) { next(error); }
+    });
+
+
+
+
+
+
+
 
 
 
