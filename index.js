@@ -76,6 +76,7 @@ async function run() {
     const ideasCollection = db.collection('ideas');
     const usersCollection = db.collection('user');
     const commentsCollection = db.collection('comments');
+    const bookmarksCollection = db.collection('bookmarks');
 
 
     const ideasToMigrate = await ideasCollection.find({ author: { $type: "string" } }).toArray();
@@ -361,7 +362,7 @@ async function run() {
       } catch (error) { next(error); }
     });
 
-    
+
 
     app.get('/api/users/ideas', verifyToken, async (req, res, next) => {
       try {
@@ -386,6 +387,45 @@ async function run() {
 
 
 
+    app.post('/api/users/bookmarks/:ideaId', verifyToken, async (req, res, next) => {
+      try {
+        const ideaId = new ObjectId(req.params.ideaId);
+        const existing = await bookmarksCollection.findOne({ user: req.user.id, idea: ideaId });
+        if (existing) {
+          return res.status(400).json({ message: 'Already bookmarked' });
+        }
+
+        const bookmarkData = { user: req.user.id, idea: ideaId, createdAt: new Date() };
+        const result = await bookmarksCollection.insertOne(bookmarkData);
+        bookmarkData._id = result.insertedId;
+        res.status(201).json(bookmarkData);
+      } catch (error) { next(error); }
+    });
+
+    app.delete('/api/users/bookmarks/:ideaId', verifyToken, async (req, res, next) => {
+      try {
+        const ideaId = new ObjectId(req.params.ideaId);
+        await bookmarksCollection.deleteOne({ user: req.user.id, idea: ideaId });
+        res.json({ message: 'Bookmark removed' });
+      } catch (error) { next(error); }
+    });
+
+    app.get('/api/users/bookmarks', verifyToken, async (req, res, next) => {
+      try {
+        const bookmarks = await bookmarksCollection.aggregate([
+          { $match: { user: req.user.id } },
+          { $lookup: { from: 'ideas', localField: 'idea', foreignField: '_id', as: 'ideaInfo' } },
+          { $unwind: { path: '$ideaInfo', preserveNullAndEmptyArrays: true } },
+          { $lookup: { from: 'user', localField: 'ideaInfo.author', foreignField: '_id', as: 'authorInfo' } },
+          { $unwind: { path: '$authorInfo', preserveNullAndEmptyArrays: true } }
+        ]).toArray();
+
+        res.json(bookmarks.map(b => {
+          if (b.ideaInfo) b.ideaInfo.author = { name: b.authorInfo?.name, image: b.authorInfo?.image };
+          return { _id: b._id, createdAt: b.createdAt, idea: b.ideaInfo };
+        }));
+      } catch (error) { next(error); }
+    });
 
 
 
