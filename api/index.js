@@ -19,27 +19,18 @@ app.use(express.json());
 app.use(cookieParser());
 
 const uri = process.env.AUTH_DB_URI;
+const dbName = uri ? (uri.split('/').pop().split('?')[0] || 'ideavaultdb') : 'ideavaultdb';
 
-const client = new MongoClient(uri, {
-  serverApi: {
-    version: ServerApiVersion.v1,
-    strict: true,
-    deprecationErrors: true,
-  },
-});
-
-const dbName = process.env.AUTH_DB_URI.split('/').pop().split('?')[0] || 'ideavaultdb';
-const db = client.db(dbName);
-console.log(`MongoDB Connected: ${dbName} (via Unified Backend)`);
-
-// collections
-const ideasCollection = db.collection('ideas');
-const usersCollection = db.collection('user');
-const commentsCollection = db.collection('comments');
-const bookmarksCollection = db.collection('bookmarks');
-
+let client = null;
+let db = null;
+let ideasCollection = null;
+let usersCollection = null;
+let commentsCollection = null;
+let bookmarksCollection = null;
+let hasRunMigrations = false;
 
 async function runMigrations() {
+  if (hasRunMigrations) return;
   try {
     const ideasToMigrate = await ideasCollection.find({ author: { $type: "string" } }).toArray();
     for (const idea of ideasToMigrate) {
@@ -55,11 +46,55 @@ async function runMigrations() {
       }
     }
     console.log('Database migrations completed successfully');
+    hasRunMigrations = true;
   } catch (error) {
     console.error('Migration error:', error);
   }
 }
-runMigrations().catch(console.dir);
+
+function connectToDatabase() {
+  if (client) {
+    return;
+  }
+
+  console.log("Connecting to MongoDB...");
+  client = new MongoClient(uri);
+
+  db = client.db(dbName);
+  ideasCollection = db.collection('ideas');
+  usersCollection = db.collection('user');
+  commentsCollection = db.collection('comments');
+  bookmarksCollection = db.collection('bookmarks');
+
+  console.log(`MongoDB Connected: ${dbName} (via Unified Backend)`);
+
+  client.on('topologyClosed', () => {
+    console.log('MongoDB Topology Closed. Resetting client.');
+    client = null;
+  });
+  if (!hasRunMigrations) {
+    runMigrations().catch(console.dir);
+  }
+}
+
+try {
+  connectToDatabase();
+} catch (err) {
+  console.error("Initial MongoDB connection failed:", err);
+}
+
+
+app.use((req, res, next) => {
+  try {
+    connectToDatabase();
+    next();
+  } catch (error) {
+    console.error("Database connection error in middleware:", error);
+    client = null;
+    next(error);
+  }
+});
+
 
 const { createRemoteJWKSet, jwtVerify } = require('jose-cjs');
 
@@ -333,7 +368,11 @@ app.delete('/api/comments/:id', verifyToken, async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
-//  user profile apis
+
+
+
+
+//  user profile 
 
 app.get('/api/users/profile', verifyToken, async (req, res, next) => {
   try {
@@ -419,6 +458,12 @@ app.get('/', (req, res) => {
 
 app.use((err, req, res, next) => {
   console.error('API Error:', err);
+
+  if (err && (err.name === 'MongoTopologyClosedError' || err.message.includes('Topology is closed') || err.message.includes('topology was destroyed'))) {
+    console.log('Detected MongoDB Topology Closed error in Express handler. Resetting client connection.');
+    client = null;
+  }
+
   const statusCode = res.statusCode === 200 ? 500 : res.statusCode;
   res.status(statusCode).json({
     message: err.message || 'Internal Server Error'
